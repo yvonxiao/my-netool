@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-NetFlow - Linux Network Process Traffic Monitor
 Real-time network traffic monitoring with process information.
 Combines iftop-style flow view with nethogs-style process view.
-
-Unlike nethogs, this tool properly tracks UDP traffic.
 """
 
 import curses
