@@ -463,6 +463,47 @@ class NetFlowApp:
             pass
         return []
 
+    def get_interface_ips(self, iface):
+        """Get all IP addresses assigned to an interface."""
+        ips = set()
+        try:
+            result = subprocess.run(
+                ["ip", "-4", "addr", "show", iface],
+                capture_output=True, text=True, timeout=1
+            )
+            if result.returncode == 0:
+                import re
+                # Match IPv4 addresses like "inet 192.168.1.100/24"
+                for match in re.finditer(r'inet\s+(\d+\.\d+\.\d+\.\d+)', result.stdout):
+                    ips.add(match.group(1))
+        except:
+            pass
+        return ips
+
+    def get_all_interface_ips(self):
+        """Get IP addresses for all interfaces."""
+        all_ips = set()
+        for iface in self.get_interfaces():
+            all_ips.update(self.get_interface_ips(iface))
+        return all_ips
+
+    def filter_connections_by_interface(self, tcp_conns, udp_conns):
+        """Filter connections to only those on the specified interface."""
+        if not self.interface:
+            return tcp_conns, udp_conns
+
+        iface_ips = self.get_interface_ips(self.interface)
+        if not iface_ips:
+            # Interface has no IP address assigned
+            return [], []
+
+        def is_on_interface(conn):
+            return conn.get("local_ip") in iface_ips
+
+        filtered_tcp = [c for c in tcp_conns if is_on_interface(c)]
+        filtered_udp = [c for c in udp_conns if is_on_interface(c)]
+        return filtered_tcp, filtered_udp
+
     def update(self):
         """Update all network statistics."""
         now = time.time()
@@ -486,13 +527,22 @@ class NetFlowApp:
         tcp_conns = self.counter.get_connections_ss('tcp')
         udp_conns = self.counter.get_connections_ss('udp')
 
+        # Filter connections by interface if specified
+        tcp_conns, udp_conns = self.filter_connections_by_interface(tcp_conns, udp_conns)
+
         # Update flows with process info
         self.update_flows(tcp_conns, udp_conns, dt)
 
     def update_flows(self, tcp_conns, udp_conns, dt):
         """Update flow tracking with accurate process mapping."""
-        total_rx = sum(r.get("rx", 0) for r in self.iface_rates.values())
-        total_tx = sum(r.get("tx", 0) for r in self.iface_rates.values())
+        # Use specified interface or all interfaces for bandwidth
+        if self.interface:
+            rate_ifaces = {self.interface: self.iface_rates.get(self.interface, {"rx": 0, "tx": 0})}
+        else:
+            rate_ifaces = self.iface_rates
+
+        total_rx = sum(r.get("rx", 0) for r in rate_ifaces.values())
+        total_tx = sum(r.get("tx", 0) for r in rate_ifaces.values())
 
         # Count active connections
         active_tcp = len([c for c in tcp_conns if c.get("state") == "ESTABLISHED"])
@@ -628,13 +678,22 @@ class NetFlowApp:
 
         self.stdscr.addstr(0, 0, f" NetFlow [IFTOP]  Interface: {iface}", curses.color_pair(4) | curses.A_BOLD)
 
-        ifaces = self.get_interfaces()
-        total_rx = sum(self.iface_rates.get(i, {}).get("rx", 0) for i in ifaces)
-        total_tx = sum(self.iface_rates.get(i, {}).get("tx", 0) for i in ifaces)
+        if self.interface:
+            rate_ifaces = [self.interface]
+        else:
+            rate_ifaces = self.get_interfaces()
+        total_rx = sum(self.iface_rates.get(i, {}).get("rx", 0) for i in rate_ifaces)
+        total_tx = sum(self.iface_rates.get(i, {}).get("tx", 0) for i in rate_ifaces)
 
         self.stdscr.addstr(1, 0, f" RX: {self.format_rate(total_rx)}  TX: {self.format_rate(total_tx)}")
 
-        y = 3
+        # Check if specified interface has no IP
+        if self.interface and not self.get_interface_ips(self.interface):
+            self.stdscr.addstr(2, 0, f" [Warning: {self.interface} has no IP address assigned]", curses.color_pair(5))
+            y = 4
+        else:
+            y = 3
+
         self.stdscr.addstr(y, 0, "  Local Address              Remote Address           PR  PID     Program          Sent        Received", curses.A_BOLD)
         self.stdscr.addstr(y+1, 0, "─" * (max_x-1))
 
@@ -667,11 +726,21 @@ class NetFlowApp:
 
         self.stdscr.addstr(0, 0, f" NetFlow [NETHOGS]  Interface: {iface}", curses.color_pair(4) | curses.A_BOLD)
 
-        ifaces = self.get_interfaces()
-        total_rx = sum(self.iface_rates.get(i, {}).get("rx", 0) for i in ifaces)
-        total_tx = sum(self.iface_rates.get(i, {}).get("tx", 0) for i in ifaces)
+        if self.interface:
+            rate_ifaces = [self.interface]
+        else:
+            rate_ifaces = self.get_interfaces()
+        total_rx = sum(self.iface_rates.get(i, {}).get("rx", 0) for i in rate_ifaces)
+        total_tx = sum(self.iface_rates.get(i, {}).get("tx", 0) for i in rate_ifaces)
 
         self.stdscr.addstr(1, 0, f" RX: {self.format_rate(total_rx)}  TX: {self.format_rate(total_tx)}")
+
+        # Check if specified interface has no IP
+        if self.interface and not self.get_interface_ips(self.interface):
+            self.stdscr.addstr(2, 0, f" [Warning: {self.interface} has no IP address assigned]", curses.color_pair(5))
+            y = 4
+        else:
+            y = 3
 
         proc_data = defaultdict(lambda: {"sent": 0, "recv": 0, "pid": 0, "name": "unknown", "uid": 0, "proto": set()})
 
